@@ -18,6 +18,7 @@ package routines
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -27,8 +28,10 @@ import (
 	vpa_api "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned/typed/autoscaling.k8s.io/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/checkpoint"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input/victoriametrics"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/logic"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/override"
 	controllerfetcher "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target/controller_fetcher"
 	metrics_recommender "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/recommender"
 	vpa_utils "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
@@ -60,6 +63,7 @@ type recommender struct {
 	lastCheckpointGC              time.Time
 	vpaClient                     vpa_api.VerticalPodAutoscalersGetter
 	podResourceRecommender        logic.PodResourceRecommender
+	vmRecommender                 *victoriametrics.Recommender
 	recommendationFormat          logic.RecommendationFormat
 	useCheckpoints                bool
 	lastAggregateContainerStateGC time.Time
@@ -76,7 +80,25 @@ func (r *recommender) GetClusterStateFeeder() input.ClusterStateFeeder {
 }
 
 func processVPAUpdate(r *recommender, vpa *model.Vpa, observedVpa *vpaautoscalingv1.VerticalPodAutoscaler) {
-	resources := r.podResourceRecommender.GetRecommendedPodResources(GetContainerNameToAggregateStateMap(vpa))
+	containerNameToAggregateStateMap := GetContainerNameToAggregateStateMap(vpa)
+
+	ov := activeOverride(vpa, time.Now())
+	if ov != nil && ov.Mode == override.ModePaused {
+		klog.V(4).InfoS("VPA is paused by a manual override, keeping the recommendation as is", "vpa", klog.KRef(vpa.ID.Namespace, vpa.ID.VpaName), "setBy", ov.SetBy, "expiresAt", ov.ExpiresAt)
+		return
+	}
+	if ov != nil {
+		klog.V(4).InfoS("VPA is pinned by a manual override", "vpa", klog.KRef(vpa.ID.Namespace, vpa.ID.VpaName), "setBy", ov.SetBy, "expiresAt", ov.ExpiresAt)
+	}
+
+	resources, err := r.resolveResources(vpa, containerNameToAggregateStateMap, ov)
+	if err != nil {
+		// Недоступность VM на цикле не должна обнулять рекомендацию -
+		// признак stateless-режима работает и в обратную сторону.
+		// См. docs/adr/0001-vm-metrics-source.md и ADR-0002 "Последствия".
+		klog.ErrorS(err, "Cannot compute recommendation, keeping previous recommendation", "vpa", klog.KRef(vpa.ID.Namespace, vpa.ID.VpaName))
+		return
+	}
 	had := vpa.HasRecommendation()
 
 	listOfResourceRecommendation := logic.MapToListOfRecommendedContainerResources(resources, r.recommendationFormat)
@@ -102,11 +124,26 @@ func processVPAUpdate(r *recommender, vpa *model.Vpa, observedVpa *vpaautoscalin
 		}
 	}
 
-	_, err := vpa_utils.UpdateVpaStatusIfNeeded(
+	_, err = vpa_utils.UpdateVpaStatusIfNeeded(
 		r.vpaClient.VerticalPodAutoscalers(vpa.ID.Namespace), vpa.ID.VpaName, vpa.AsStatus(), &observedVpa.Status)
 	if err != nil {
 		klog.ErrorS(err, "Cannot update VPA", "vpa", klog.KRef(vpa.ID.Namespace, vpa.ID.VpaName))
 	}
+}
+
+// recommendFromVictoriaMetrics queries VictoriaMetrics for the containers of
+// vpa. Container names come from containerNameToAggregateStateMap (it already
+// applies the resourcePolicy Off filtering), but the aggregated state itself
+// is unused - see ADR-0002.
+func recommendFromVictoriaMetrics(vmRecommender *victoriametrics.Recommender, vpa *model.Vpa, containerNameToAggregateStateMap model.ContainerNameToAggregateStateMap) (logic.RecommendedPodResources, error) {
+	if vpa.TargetRef == nil {
+		return nil, fmt.Errorf("vpa has no targetRef, cannot determine pod name prefix")
+	}
+	containerNames := make([]string, 0, len(containerNameToAggregateStateMap))
+	for containerName := range containerNameToAggregateStateMap {
+		containerNames = append(containerNames, containerName)
+	}
+	return vmRecommender.GetRecommendedPodResources(context.Background(), vpa.ID.Namespace, vpa.TargetRef.Name, containerNames)
 }
 
 // UpdateVPAs update VPA CRD objects' status.
@@ -201,6 +238,7 @@ type RecommenderFactory struct {
 	ControllerFetcher      controllerfetcher.ControllerFetcher
 	CheckpointWriter       checkpoint.CheckpointWriter
 	PodResourceRecommender logic.PodResourceRecommender
+	VMRecommender          *victoriametrics.Recommender
 	RecommendationFormat   logic.RecommendationFormat
 	VpaClient              vpa_api.VerticalPodAutoscalersGetter
 
@@ -225,6 +263,7 @@ func (c RecommenderFactory) Make() Recommender {
 		useCheckpoints:                c.UseCheckpoints,
 		vpaClient:                     c.VpaClient,
 		podResourceRecommender:        c.PodResourceRecommender,
+		vmRecommender:                 c.VMRecommender,
 		recommendationFormat:          c.RecommendationFormat,
 		recommendationPostProcessor:   c.RecommendationPostProcessors,
 		lastAggregateContainerStateGC: time.Now(),

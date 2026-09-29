@@ -1,0 +1,94 @@
+# A web server whose every request costs CPU, so the load follows the request rate:
+# send more requests (hack/load.sh) and the usage, and later the recommendation, grows.
+#
+#   GET /cgi-bin/burn?n=<iterations>   spins a shell loop n times, answers with the pod name
+#
+# Same requests/limits shape as hamster.yaml: the limit is 4x the request, for CPU and for
+# memory. The 1 CPU limit is high enough not to cap the usage the recommender sees.
+# The VPA is on our recommender (vm) and in updateMode Off: it computes a recommendation
+# and shows it, and touches no pod. Switch it to apply the values:
+#   kubectl patch vpa loadtarget-vpa --type merge -p '{"spec":{"updatePolicy":{"updateMode":"InPlaceOrRecreate"}}}'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loadtarget-cgi
+data:
+  burn: |
+    #!/bin/sh
+    n=${QUERY_STRING#n=}
+    case "$n" in ''|*[!0-9]*) n=100000 ;; esac
+    [ "$n" -gt 5000000 ] && n=5000000
+    i=0
+    while [ "$i" -lt "$n" ]; do i=$((i+1)); done
+    echo "Content-Type: text/plain"
+    echo
+    echo "burned $n iterations on $(hostname)"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadtarget
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: loadtarget
+  template:
+    metadata:
+      labels:
+        app: loadtarget
+    spec:
+      containers:
+        - name: web
+          image: busybox:1.36
+          command: ["httpd", "-f", "-p", "8080", "-h", "/www"]
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 250m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /cgi-bin/burn?n=1
+              port: http
+            periodSeconds: 5
+          volumeMounts:
+            - name: cgi
+              mountPath: /www/cgi-bin
+      volumes:
+        - name: cgi
+          configMap:
+            name: loadtarget-cgi
+            defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loadtarget
+spec:
+  selector:
+    app: loadtarget
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loadtarget-vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: loadtarget
+  recommenders:
+    - name: vm
+  updatePolicy:
+    updateMode: "Off"

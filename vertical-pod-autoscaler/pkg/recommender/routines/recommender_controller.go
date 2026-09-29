@@ -18,6 +18,7 @@ package routines
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input/history"
 	input_metrics "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input/metrics"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input/victoriametrics"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/logic"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target"
@@ -86,7 +88,7 @@ func NewRecommenderController(
 		config.OOMMinBumpUp,
 	))
 
-	useCheckpoints := config.Storage != "prometheus"
+	useCheckpoints := config.Storage != "prometheus" && !usesVictoriaMetrics(config)
 
 	var postProcessors []RecommendationPostProcessor
 	if config.PostProcessorCPUasInteger {
@@ -136,13 +138,20 @@ func NewRecommenderController(
 	}.Make()
 	controllerFetcher.Start(ctx, scaleCacheLoopPeriod)
 
-	recommender := RecommenderFactory{
-		ClusterState:       clusterState,
-		ClusterStateFeeder: clusterStateFeeder,
-		ControllerFetcher:  controllerFetcher,
-		CheckpointWriter:   checkpoint.NewCheckpointWriter(clusterState, vpaClient.AutoscalingV1()),
-		VpaClient:          vpaClient.AutoscalingV1(),
-		PodResourceRecommender: logic.CreatePodResourceRecommender(logic.RecommendationConfig{
+	var podResourceRecommender logic.PodResourceRecommender
+	var vmRecommender *victoriametrics.Recommender
+	if usesVictoriaMetrics(config) {
+		// Перцентили и максимум считает сама VictoriaMetrics через MetricsQL,
+		// а не гистограмма VPA - recommender для этого пути stateless.
+		// См. docs/adr/0002-percentiles-via-metricsql.md.
+		var err error
+		vmRecommender, err = victoriametrics.NewRecommenderFromConfig(config)
+		if err != nil {
+			return nil, fmt.Errorf("cannot create VictoriaMetrics recommender: %v", err)
+		}
+		klog.V(1).InfoS("Using VictoriaMetrics-backed PodResourceRecommender", "address", config.PrometheusAddress)
+	} else {
+		podResourceRecommender = logic.CreatePodResourceRecommender(logic.RecommendationConfig{
 			SafetyMarginFraction:       config.SafetyMarginFraction,
 			PodMinCPUMillicores:        config.PodMinCPUMillicores,
 			PodMinMemoryMb:             config.PodMinMemoryMb,
@@ -154,7 +163,17 @@ func NewRecommenderController(
 			LowerBoundMemoryPercentile: config.LowerBoundMemoryPercentile,
 			UpperBoundMemoryPercentile: config.UpperBoundMemoryPercentile,
 			ConfidenceIntervalMemory:   config.ConfidenceIntervalMemory,
-		}),
+		})
+	}
+
+	recommender := RecommenderFactory{
+		ClusterState:           clusterState,
+		ClusterStateFeeder:     clusterStateFeeder,
+		ControllerFetcher:      controllerFetcher,
+		CheckpointWriter:       checkpoint.NewCheckpointWriter(clusterState, vpaClient.AutoscalingV1()),
+		VpaClient:              vpaClient.AutoscalingV1(),
+		PodResourceRecommender: podResourceRecommender,
+		VMRecommender:          vmRecommender,
 		RecommendationFormat: logic.RecommendationFormat{
 			HumanizeMemory:     config.HumanizeMemory,
 			RoundCPUMillicores: config.RoundCPUMillicores,
@@ -208,7 +227,18 @@ func initGlobalMaxAllowed(config *recommender_config.RecommenderConfig) corev1.R
 	return result
 }
 
+// usesVictoriaMetrics says whether recommendations come from MetricsQL queries to
+// VictoriaMetrics (--storage=vm) instead of the VPA histogram. --recommender-name=vm
+// still implies it, for the earlier way of starting.
+func usesVictoriaMetrics(config *recommender_config.RecommenderConfig) bool {
+	return config.Storage == "vm" || config.RecommenderName == "vm"
+}
+
 func initHistoryProvider(ctx context.Context, rec Recommender, config *recommender_config.RecommenderConfig) error {
+	if usesVictoriaMetrics(config) {
+		// Stateless: no checkpoints to read and no histogram to warm up.
+		return nil
+	}
 	useCheckpoints := config.Storage != "prometheus"
 	if useCheckpoints {
 		rec.GetClusterStateFeeder().InitFromCheckpoints(ctx)

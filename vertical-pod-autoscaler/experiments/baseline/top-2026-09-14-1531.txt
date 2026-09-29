@@ -1,0 +1,3 @@
+NAME                       CPU(cores)   MEMORY(bytes)   
+hamster-698fb64549-xvvzq   503m         0Mi             
+hamster-698fb64549-zgr4f   503m         0Mi             

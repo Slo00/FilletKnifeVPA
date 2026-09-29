@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hamster
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hamster
+  template:
+    metadata:
+      labels:
+        app: hamster
+    spec:
+      containers:
+        - name: hamster
+          image: busybox:1.36
+          resources:
+            requests:
+              cpu: 250m
+              memory: 50Mi
+            limits:
+              cpu: "1"
+              memory: 200Mi
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - "while true; do timeout 1 yes > /dev/null 2>&1; sleep 1; done"
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: hamster-vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hamster
+  recommenders:
+    - name: vm
+  updatePolicy:
+    updateMode: "Off"

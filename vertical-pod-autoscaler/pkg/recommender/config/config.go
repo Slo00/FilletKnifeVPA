@@ -81,6 +81,7 @@ type RecommenderConfig struct {
 	CtrNamespaceLabel         string
 	CtrPodNameLabel           string
 	CtrNameLabel              string
+	ClusterName               string
 	Username                  string
 	Password                  string
 	PrometheusBearerToken     string
@@ -151,8 +152,9 @@ func DefaultRecommenderConfig() *RecommenderConfig {
 		PodNamespaceLabel:         "kubernetes_namespace",
 		PodNameLabel:              "kubernetes_pod_name",
 		CtrNamespaceLabel:         "namespace",
-		CtrPodNameLabel:           "pod_name",
-		CtrNameLabel:              "name",
+		CtrPodNameLabel:           "pod",
+		CtrNameLabel:              "container",
+		ClusterName:               "",
 		Username:                  "",
 		Password:                  "",
 		PrometheusBearerToken:     "",
@@ -188,7 +190,7 @@ func InitRecommenderFlags() *RecommenderConfig {
 	flag.DurationVar(&config.CheckpointsGCInterval, "checkpoints-gc-interval", config.CheckpointsGCInterval, `How often orphaned checkpoints should be garbage collected`)
 	flag.DurationVar(&config.CheckpointsWriteTimeout, "checkpoints-timeout", config.CheckpointsWriteTimeout, `Timeout for writing checkpoints since the start of the recommender's main loop`)
 	flag.StringVar(&config.Address, "address", config.Address, "The address to expose Prometheus metrics.")
-	flag.StringVar(&config.Storage, "storage", config.Storage, `Specifies storage mode. Supported values: prometheus, checkpoint (default)`)
+	flag.StringVar(&config.Storage, "storage", config.Storage, `Specifies storage mode. Supported values: vm (recommendations from MetricsQL queries to VictoriaMetrics at --prometheus-address, stateless, independent of --recommender-name), prometheus (VPA histogram warmed up from Prometheus at start), checkpoint (default)`)
 	flag.BoolVar(&config.MemorySaver, "memory-saver", config.MemorySaver, `If true, only track pods which have an associated VPA`)
 	flag.IntVar(&config.UpdateWorkerCount, "update-worker-count", config.UpdateWorkerCount, "Number of concurrent workers to update VPA recommendations and checkpoints. When increasing this setting, make sure the client-side rate limits ('kube-api-qps' and 'kube-api-burst') are either increased or turned off as well. Determines the minimum number of VPA checkpoints written per recommender loop.")
 	// MinCheckpointsPerRun is deprecated but kept for warning/compatibility.
@@ -226,6 +228,7 @@ func InitRecommenderFlags() *RecommenderConfig {
 	flag.StringVar(&config.CtrNamespaceLabel, "container-namespace-label", config.CtrNamespaceLabel, `Label name to look for container namespaces`)
 	flag.StringVar(&config.CtrPodNameLabel, "container-pod-name-label", config.CtrPodNameLabel, `Label name to look for container pod names`)
 	flag.StringVar(&config.CtrNameLabel, "container-name-label", config.CtrNameLabel, `Label name to look for container names`)
+	flag.StringVar(&config.ClusterName, "cluster-name", config.ClusterName, `Value of the "cluster" label to scope VictoriaMetrics queries to when a single VM instance holds metrics from multiple clusters. Empty (default) means no cluster filter is applied. Only used with --storage=vm.`)
 	flag.StringVar(&config.Username, "username", config.Username, "The username used in the prometheus server basic auth. Can also be set via the PROMETHEUS_USERNAME environment variable")
 	flag.StringVar(&config.Password, "password", config.Password, "The password used in the prometheus server basic auth. Can also be set via the PROMETHEUS_PASSWORD environment variable")
 	flag.StringVar(&config.PrometheusBearerToken, "prometheus-bearer-token", config.PrometheusBearerToken, "The bearer token used in the Prometheus server bearer token auth")

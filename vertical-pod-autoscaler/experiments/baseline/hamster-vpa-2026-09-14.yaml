@@ -1,0 +1,49 @@
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"autoscaling.k8s.io/v1","kind":"VerticalPodAutoscaler","metadata":{"annotations":{},"name":"hamster-vpa","namespace":"default"},"spec":{"resourcePolicy":{"containerPolicies":[{"containerName":"*","maxAllowed":{"cpu":1,"memory":"500Mi"},"minAllowed":{"cpu":"50m","memory":"32Mi"}}]},"targetRef":{"apiVersion":"apps/v1","kind":"Deployment","name":"hamster"},"updatePolicy":{"updateMode":"Off"}}}
+  creationTimestamp: "2026-09-14T12:05:54Z"
+  generation: 1
+  name: hamster-vpa
+  namespace: default
+  resourceVersion: "2737"
+  uid: 7eea4499-0018-44b4-89ab-0ea1c876ec1d
+spec:
+  resourcePolicy:
+    containerPolicies:
+    - containerName: '*'
+      maxAllowed:
+        cpu: 1
+        memory: 500Mi
+      minAllowed:
+        cpu: 50m
+        memory: 32Mi
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hamster
+  updatePolicy:
+    updateMode: "Off"
+status:
+  conditions:
+  - lastTransitionTime: "2026-09-14T12:07:38Z"
+    status: "True"
+    type: RecommendationProvided
+  observedGeneration: 1
+  recommendation:
+    containerRecommendations:
+    - containerName: hamster
+      lowerBound:
+        cpu: 660m
+        memory: 250Mi
+      target:
+        cpu: 813m
+        memory: 250Mi
+      uncappedTarget:
+        cpu: 813m
+        memory: 250Mi
+      upperBound:
+        cpu: "1"
+        memory: 500Mi

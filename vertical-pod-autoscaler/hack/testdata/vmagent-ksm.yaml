@@ -1,0 +1,9 @@
+# kube-state-metrics gives the requests/limits series (kube_pod_container_resource_*)
+# that the web page charts next to usage. honor_labels keeps the namespace/pod/container
+# labels of the series themselves; without it vmagent would overwrite them with the
+# labels of the kube-state-metrics pod and rename the real ones to exported_*.
+extraScrapeConfigs:
+  - job_name: kube-state-metrics
+    honor_labels: true
+    static_configs:
+      - targets: ["kube-state-metrics.monitoring.svc:8080"]

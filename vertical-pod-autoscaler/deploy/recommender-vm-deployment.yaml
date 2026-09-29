@@ -1,0 +1,93 @@
+# Our recommender: it takes the metrics from VictoriaMetrics instead of metrics-server
+# (docs/adr/0002-percentiles-via-metricsql.md) and understands the manual overrides
+# that the web page writes (docs/adr/0003-manual-overrides.md).
+#
+# It runs NEXT TO the stock vpa-recommender and does not replace it. It only handles the VPAs
+# that ask for it by name:
+#
+#   spec:
+#     recommenders:
+#       - name: vm
+#
+# Every other VPA stays with the stock recommender, untouched.
+#
+# To make it THE recommender (scale the stock one to 0): replace --recommender-name=vm below
+# with --storage=vm. The name then stays "default" and it serves every VPA that names
+# no recommender, plus those that name "default", exactly like the stock one. To try it safely, create a
+# VPA like that with updateMode: Off: it gets a recommendation and no pod is changed.
+#
+# It uses the service account and the RBAC of the stock recommender (deploy/vpa-rbac.yaml).
+# Image: kvltyapo4ka/vpa-recommender-vm:dev on Docker Hub (linux/amd64 and linux/arm64). To build your own:
+# docker buildx build -f pkg/recommender/Dockerfile -t <your-registry>/vpa-recommender-vm:<tag> --push .
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpa-recommender-vm
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vpa-recommender-vm
+  template:
+    metadata:
+      labels:
+        app: vpa-recommender-vm
+        app.kubernetes.io/component: recommender
+        app.kubernetes.io/name: vertical-pod-autoscaler
+    spec:
+      serviceAccountName: vpa-recommender
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534 # nobody
+      containers:
+        - name: recommender
+          image: kvltyapo4ka/vpa-recommender-vm:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - --recommender-name=vm
+            # VictoriaMetrics that holds the cAdvisor series of the kubelets.
+            - --prometheus-address=http://vm-victoria-metrics-single-server.monitoring.svc:8428
+            # The job that scrapes /metrics/cadvisor; the label names default to
+            # namespace/pod/container. Check both against your own vmagent config.
+            - --prometheus-cadvisor-job-name=kubernetes-nodes-cadvisor
+            # One VictoriaMetrics for several clusters: the value of the "cluster" label of this one.
+            # - --cluster-name=<name>
+            # Window and step of the calculation. The web page must have the same two.
+            - --history-length=1d
+            - --history-resolution=1m
+            # Margin on top of the percentile: 0.15 is the default; 0.30 for prod, 0.15 for stage.
+            - --recommendation-margin-fraction=0.15
+            # Credentials, if VictoriaMetrics asks for them (prefer the environment, not the args):
+            #   PROMETHEUS_USERNAME / PROMETHEUS_PASSWORD, or --prometheus-bearer-token-file=<path>
+          resources:
+            limits:
+              cpu: 200m
+              memory: 1000Mi
+            requests:
+              cpu: 50m
+              memory: 500Mi
+          ports:
+            - name: prometheus
+              containerPort: 8942
+          livenessProbe:
+            httpGet:
+              path: /health-check
+              port: prometheus
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health-check
+              port: prometheus
+              scheme: HTTP
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

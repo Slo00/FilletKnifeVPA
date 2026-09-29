@@ -1,0 +1,40 @@
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"autoscaling.k8s.io/v1","kind":"VerticalPodAutoscaler","metadata":{"annotations":{},"name":"hamster-vpa","namespace":"default"},"spec":{"targetRef":{"apiVersion":"apps/v1","kind":"Deployment","name":"hamster"},"updatePolicy":{"updateMode":"Off"}}}
+  creationTimestamp: "2026-09-14T12:28:05Z"
+  generation: 1
+  name: hamster-vpa
+  namespace: default
+  resourceVersion: "4082"
+  uid: b8314ca7-9b33-4433-b1f8-7989785d2958
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hamster
+  updatePolicy:
+    updateMode: "Off"
+status:
+  conditions:
+  - lastTransitionTime: "2026-09-14T12:29:29Z"
+    status: "True"
+    type: RecommendationProvided
+  observedGeneration: 1
+  recommendation:
+    containerRecommendations:
+    - containerName: hamster
+      lowerBound:
+        cpu: 690m
+        memory: 250Mi
+      target:
+        cpu: 813m
+        memory: 250Mi
+      uncappedTarget:
+        cpu: 813m
+        memory: 250Mi
+      upperBound:
+        cpu: 42549m
+        memory: "601874331"
